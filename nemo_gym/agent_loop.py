@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util as _ilu
+import logging
 import os
 import socket
 import sys
 import threading
 from collections import defaultdict
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # TODO: remove in next nemo gym release
 _nemo_gym_path = os.environ.get("NEMO_GYM_ROOT")
@@ -57,7 +60,13 @@ from verl.utils.ray_utils import auto_await
 _postprocess = _AgentLoopWorker._postprocess
 
 
-class NemoGymAgentLoopManager(AgentLoopManager):
+class NeMoGymAgentLoopManager(AgentLoopManager):
+    def __init__(self, *args, **kwargs):
+        from recipe.nemo_gym.replica import NeMoGymvLLMReplica
+
+        self.rollout_replica_class = NeMoGymvLLMReplica
+        super().__init__(*args, **kwargs)
+
     @classmethod
     @auto_await
     async def create(
@@ -67,7 +76,7 @@ class NemoGymAgentLoopManager(AgentLoopManager):
         rollout_resource_pool=None,
         reward_loop_worker_handles=None,
         teacher_model_manager=None,
-    ) -> NemoGymAgentLoopManager:
+    ) -> NeMoGymAgentLoopManager:
         instance = cls(
             config,
             worker_group,
@@ -176,7 +185,7 @@ class NemoGymAgentLoopManager(AgentLoopManager):
         )
         self._rollout_thread.start()
 
-        print(f"NemoGymAgentLoopManager ready: {len(base_urls)} vLLM endpoints: {base_urls}")
+        logger.info(f"NeMoGymAgentLoopManager ready: {len(base_urls)} vLLM endpoints: {base_urls}")
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
         future = asyncio.run_coroutine_threadsafe(self._async_generate_sequences(prompts), self._rollout_loop)

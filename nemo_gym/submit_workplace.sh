@@ -76,10 +76,8 @@ echo "Installing nemo-gym..."
 srun --overlap --nodes=1 --ntasks=1 -w "${head_node}" \
     --no-container-mount-home --container-mounts=${MOUNTS} \
     --container-name=ray-head \
-    bash -c "PYTHONPATH= touch ${NEMO_GYM_ROOT}/scripts/__init__.py && pip install -q uv && echo 'blinker==1.4' > /tmp/constraints.txt && pip install -q -e ${NEMO_GYM_ROOT} -c /tmp/constraints.txt"
+    bash -c "echo 'blinker==1.4' > /tmp/constraints.txt && pip install -q uv && pip install -q -e ${NEMO_GYM_ROOT} -c /tmp/constraints.txt"
 
-# TODO: test if hermes tool parser still hits "already borrowed" tokenizer errors under concurrent load
-# if so, point to or provide the patch here, or use a different model+tool parser
 
 echo "Launching training on ${head_node}..."
 PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "${head_node}" \
@@ -93,7 +91,7 @@ PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "${head_node}" \
         VLLM_USE_V1=1 \
         TORCH_NCCL_AVOID_RECORD_STREAMS=1 \
         NEMO_GYM_ROOT="${NEMO_GYM_ROOT}" \
-        PYTHONPATH="${NEMO_GYM_ROOT}:${VERL_ROOT}" \
+        PYTHONPATH="${VERL_ROOT}" \
         VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
         RAY_grpc_keepalive_time_ms=60000 \
         RAY_grpc_keepalive_timeout_ms=600000 \
@@ -105,7 +103,7 @@ PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "${head_node}" \
             data.train_files="${TRAIN_FILE}" \
             data.val_files="${TEST_FILE}" \
             +data.custom_cls.path="${VERL_ROOT}/recipe/nemo_gym/dataset.py" \
-            +data.custom_cls.name=NemoGymJSONLDataset \
+            +data.custom_cls.name=NeMoGymJSONLDataset \
             data.truncation=left \
             data.train_batch_size=32 \
             actor_rollout_ref.rollout.n=16 \
@@ -166,6 +164,6 @@ PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "${head_node}" \
             trainer.default_local_dir="${CKPTS_DIR}" \
             trainer.resume_mode=disable \
             trainer.log_val_generations=10 \
-            +actor_rollout_ref.rollout.agent.agent_loop_manager_class='recipe.nemo_gym.agent_loop.NemoGymAgentLoopManager' \
+            +actor_rollout_ref.rollout.agent.agent_loop_manager_class='recipe.nemo_gym.agent_loop.NeMoGymAgentLoopManager' \
             +actor_rollout_ref.rollout.agent.agent_loop_config_path="${VERL_ROOT}/recipe/nemo_gym/configs/workplace.yaml" \
     2>&1
