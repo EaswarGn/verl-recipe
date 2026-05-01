@@ -2,6 +2,7 @@
 
 import os
 import socket
+from pprint import pprint
 
 import hydra
 import ray
@@ -9,6 +10,8 @@ from omegaconf import OmegaConf
 
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
 from verl.utils.device import auto_set_device
+from verl.utils.fs import copy_to_local
+from verl.utils import hf_processor, hf_tokenizer
 
 from .atropos_ray_trainer import RayAtroposTrainer
 
@@ -20,6 +23,7 @@ def main(config):
 
 
 def run_atropos(config) -> None:
+    # 1. Initialize Ray
     if not ray.is_initialized():
         default_runtime_env = get_ppo_ray_runtime_env()
         ray_init_kwargs = config.ray_kwargs.get("ray_init", {})
@@ -30,30 +34,13 @@ def run_atropos(config) -> None:
         ray.init(**OmegaConf.to_container(ray_init_kwargs))
 
     try:
-        runner = TaskRunner.remote()
-        ray.get(runner.run.remote(config))
-    finally:
-        if ray.is_initialized():
-            ray.shutdown()
-
-
-@ray.remote(num_cpus=1)
-class TaskRunner:
-    def run(self, config):
-        from pprint import pprint
-
-        from omegaconf import OmegaConf
-
-        from verl.utils.fs import copy_to_local
-
-        print(f"TaskRunner hostname: {socket.gethostname()}, PID: {os.getpid()}")
+        # 2. Run Trainer Setup Directly (No Actor)
+        print(f"Main Process hostname: {socket.gethostname()}, PID: {os.getpid()}")
 
         pprint(OmegaConf.to_container(config, resolve=True))
         OmegaConf.resolve(config)
 
         local_path = copy_to_local(config.actor_rollout_ref.model.path)
-
-        from verl.utils import hf_processor, hf_tokenizer
 
         trust_remote_code = config.data.get("trust_remote_code", False)
         tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
@@ -64,11 +51,9 @@ class TaskRunner:
         # define worker classes — only ActorRollout needed (no Critic for GRPO, no RewardModel)
         if config.actor_rollout_ref.actor.strategy in {"fsdp", "fsdp2"}:
             from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker
-
             ray_worker_group_cls = RayWorkerGroup
         elif config.actor_rollout_ref.actor.strategy == "megatron":
             from verl.workers.megatron_workers import AsyncActorRolloutRefWorker
-
             ray_worker_group_cls = RayWorkerGroup
         else:
             raise NotImplementedError(f"Unsupported strategy: {config.actor_rollout_ref.actor.strategy}")
@@ -102,8 +87,15 @@ class TaskRunner:
             resource_pool_manager=resource_pool_manager,
             ray_worker_group_cls=ray_worker_group_cls,
         )
+        
+        # 3. Initialize and Fit
         trainer.init_workers()
         trainer.fit()
+
+    finally:
+        # 4. Clean up
+        if ray.is_initialized():
+            ray.shutdown()
 
 
 if __name__ == "__main__":
