@@ -108,7 +108,11 @@ async def _release_generation_slot():
         if _in_flight < 0:
             _in_flight = 0
 
-        _state_cond.notify_all()
+        # Only notify if we are draining AND we hit zero
+        if _paused and _in_flight == 0:
+            _state_cond.notify_all()
+
+        #_state_cond.notify_all()
 
 
 # -----------------------------------------------------------------------------
