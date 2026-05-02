@@ -72,11 +72,6 @@ sleep 2
 echo "=== GPU status ==="
 nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader
 
-echo "=== Step 1: Starting Atropos Trajectory API ==="
-run-api --port "${ATROPOS_API_PORT}" > /tmp/api.log 2>&1 &
-PIDS+=($!)
-sleep 3
-
 echo "=== Step 2: Starting verl trainer (internal vLLM, HYBRID mode) ==="
 python3 -m recipe.atropos.main_atropos \
     actor_rollout_ref.model.path="${MODEL}" \
