@@ -26,6 +26,10 @@ def run_atropos(config) -> None:
     # 1. Initialize Ray
     if not ray.is_initialized():
         default_runtime_env = get_ppo_ray_runtime_env()
+        cuda_path = "/usr/lib/x86_64-linux-gnu"
+        default_runtime_env["env_vars"]["LD_LIBRARY_PATH"] = cuda_path
+        default_runtime_env["env_vars"]["LIBRARY_PATH"] = cuda_path
+        
         ray_init_kwargs = config.ray_kwargs.get("ray_init", {})
         runtime_env_kwargs = ray_init_kwargs.get("runtime_env", {})
         runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
