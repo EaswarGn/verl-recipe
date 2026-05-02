@@ -198,6 +198,8 @@ class RayAtroposTrainer(RayPPOTrainer):
             vllm_addresses = self.async_rollout_manager.server_addresses
             with open(ready_file, "w") as f:
                 f.write(",".join(vllm_addresses))
+            print(f"vLLM addresses ready at: {ready_file}")
+            print(f"file content: {",".join(vllm_addresses)}")
 
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Atropos Training")
 
