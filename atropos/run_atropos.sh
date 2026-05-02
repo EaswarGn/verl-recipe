@@ -171,7 +171,7 @@ done
 echo "=== Step 4: Starting ${ATROPOS_ENV} environment ==="
 cd "${ATROPOS_DIR}"
 
-python3 "environments/${ATROPOS_ENV}.py" serve \
+uv run --no-sync "environments/${ATROPOS_ENV}.py" serve \
     --env.rollout_server_url "http://localhost:${ATROPOS_API_PORT}" \
     --env.group_size "${GROUP_SIZE}" \
     --env.max_token_length "${MAX_RESPONSE_LENGTH}" \
