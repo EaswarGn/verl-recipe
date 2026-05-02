@@ -1,11 +1,10 @@
 """CPU-only HTTP proxy between atropos environments and verl's internal vLLM.
 
 FIXES:
-- Eliminates race between /pause and request admission
-- Makes request admission + in-flight accounting atomic
-- Prevents requests from slipping through during drain
-- Uses condition variable instead of polling
-- Correctly handles pause/resume under async concurrency
+- Fast request admission: lock held for microseconds, no condition variables
+- Massively parallel requests: eliminates global contention and notify_all storms
+- Fast release: lock-free decrementing
+- Correct /pause: occasional stale reads handled via polling
 """
 
 import argparse
@@ -29,16 +28,8 @@ _client: httpx.AsyncClient | None = None
 _paused: bool = False
 _in_flight: int = 0
 
-# protects:
-#   - _paused
-#   - _in_flight
-#   - request admission
-_state_lock: asyncio.Lock | None = None
-
-# notified whenever:
-#   - in-flight count changes
-#   - pause/resume state changes
-_state_cond: asyncio.Condition | None = None
+_admission_lock: asyncio.Lock | None = None
+_resume_event: asyncio.Event | None = None
 
 _DRAIN_TIMEOUT: float = 300.0
 _GENERATION_TIMEOUT: float = 300.0
@@ -55,14 +46,15 @@ def _next_backend() -> str:
 
 @asynccontextmanager
 async def lifespan(app):
-    global _client, _state_lock, _state_cond
+    global _client, _admission_lock, _resume_event
 
     _client = httpx.AsyncClient(
         timeout=httpx.Timeout(_GENERATION_TIMEOUT, connect=10)
     )
 
-    _state_lock = asyncio.Lock()
-    _state_cond = asyncio.Condition(_state_lock)
+    _admission_lock = asyncio.Lock()
+    _resume_event = asyncio.Event()
+    _resume_event.set()
 
     yield
 
@@ -78,41 +70,31 @@ app = FastAPI(lifespan=lifespan)
 
 async def _acquire_generation_slot():
     """
-    Atomically:
-      - waits until proxy is resumed
-      - increments in-flight counter
-
-    This fully eliminates the race condition where:
-      request passes paused check
-      BUT has not incremented in_flight yet
-      while /pause drains.
+    Fast request admission.
+    Acquires slot natively unless paused. If paused, waits on the resume event
+    outside of the lock to prevent global contention.
     """
-
     global _in_flight
 
-    async with _state_cond:
-        while _paused:
-            await _state_cond.wait()
+    while True:
+        async with _admission_lock:
+            if not _paused:
+                _in_flight += 1
+                return
 
-        _in_flight += 1
+            wait_event = _resume_event
+
+        await wait_event.wait()
 
 
 async def _release_generation_slot():
-    """Decrement in-flight counter and notify drain waiters."""
-
+    """
+    Fast release.
+    No locking needed because only /pause cares, occasional stale reads are 
+    fine INSIDE the pause loop, and the admission race is already eliminated.
+    """
     global _in_flight
-
-    async with _state_cond:
-        _in_flight -= 1
-
-        if _in_flight < 0:
-            _in_flight = 0
-
-        # Only notify if we are draining AND we hit zero
-        if _paused and _in_flight == 0:
-            _state_cond.notify_all()
-
-        #_state_cond.notify_all()
+    _in_flight -= 1
 
 
 # -----------------------------------------------------------------------------
@@ -126,7 +108,6 @@ async def health():
 
     Returns 503 while paused.
     """
-
     if _paused:
         return Response(status_code=503)
 
@@ -150,7 +131,6 @@ async def generate(request: Request):
     """
     Translate atropos /generate -> /v1/completions.
     """
-
     await _acquire_generation_slot()
 
     try:
@@ -340,58 +320,32 @@ async def v1_chat_completions(request: Request):
 async def pause():
     """
     Stop admitting new requests and wait for all in-flight requests to drain.
-
-    CRITICAL:
-    Request admission and in-flight accounting are synchronized under the
-    same condition lock, so no requests can slip through after pause begins.
+    Occasionally polling _in_flight works efficiently because new admissions
+    are blocked behind _admission_lock and _paused=True.
     """
-
     global _paused
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _DRAIN_TIMEOUT
-
-    async with _state_cond:
-
-        # block new admissions immediately
+    async with _admission_lock:
         _paused = True
+        _resume_event.clear()
 
-        while _in_flight > 0:
+    deadline = asyncio.get_running_loop().time() + _DRAIN_TIMEOUT
 
-            remaining = deadline - loop.time()
-
-            if remaining <= 0:
-
-                # self-recover
+    while _in_flight > 0:
+        if asyncio.get_running_loop().time() > deadline:
+            async with _admission_lock:
                 _paused = False
-                _state_cond.notify_all()
+                _resume_event.set()
 
-                return JSONResponse(
-                    {
-                        "status": "timeout",
-                        "in_flight": _in_flight,
-                    },
-                    status_code=504,
-                )
+            return JSONResponse(
+                {
+                    "status": "timeout",
+                    "in_flight": _in_flight,
+                },
+                status_code=504,
+            )
 
-            try:
-                await asyncio.wait_for(
-                    _state_cond.wait(),
-                    timeout=remaining,
-                )
-
-            except asyncio.TimeoutError:
-
-                _paused = False
-                _state_cond.notify_all()
-
-                return JSONResponse(
-                    {
-                        "status": "timeout",
-                        "in_flight": _in_flight,
-                    },
-                    status_code=504,
-                )
+        await asyncio.sleep(0.01)
 
     return JSONResponse(
         {
@@ -404,18 +358,13 @@ async def pause():
 @app.post("/resume")
 async def resume():
     """Resume request admission."""
-
     global _paused
 
-    async with _state_cond:
+    async with _admission_lock:
         _paused = False
-        _state_cond.notify_all()
+        _resume_event.set()
 
-    return JSONResponse(
-        {
-            "status": "resumed",
-        }
-    )
+    return JSONResponse({"status": "resumed"})
 
 
 # -----------------------------------------------------------------------------
@@ -423,7 +372,6 @@ async def resume():
 # -----------------------------------------------------------------------------
 
 def main():
-
     parser = argparse.ArgumentParser(
         description="atropos /generate -> vLLM proxy"
     )
