@@ -25,7 +25,7 @@
 set -euo pipefail
 
 export HYDRA_FULL_ERROR=1
-#export VLLM_ATTENTION_BACKEND=FLASHINFER
+export VLLM_ATTENTION_BACKEND=FLASHINFER
 
 ATROPOS_ENV="${ATROPOS_ENV:-gsm8k_server}"
 MODEL="${MODEL:-Qwen/Qwen3-1.7B}"
@@ -46,8 +46,8 @@ GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.45}"
 GRAD_CLIP="${GRAD_CLIP:-1.0}"
 ENTROPY_COEFF="${ENTROPY_COEFF:-0}"
 SAVE_FREQ="${SAVE_FREQ:-10}"
-PARAM_OFFLOAD="${PARAM_OFFLOAD:-false}"
-OPTIMIZER_OFFLOAD="${OPTIMIZER_OFFLOAD:-false}"
+PARAM_OFFLOAD="${PARAM_OFFLOAD:-true}"
+OPTIMIZER_OFFLOAD="${OPTIMIZER_OFFLOAD:-true}"
 N_GPUS="${N_GPUS:-1}"
 STEPS_PER_EVAL="${STEPS_PER_EVAL:-}"
 PIDS=()
@@ -71,6 +71,11 @@ sleep 2
 
 echo "=== GPU status ==="
 nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader
+
+echo "=== Step 1: Starting Atropos Trajectory API ==="
+run-api --port "${ATROPOS_API_PORT}" > /tmp/api.log 2>&1 &
+PIDS+=($!)
+sleep 3
 
 echo "=== Step 2: Starting verl trainer (internal vLLM, HYBRID mode) ==="
 python3 -m recipe.atropos.main_atropos \
@@ -171,7 +176,7 @@ done
 echo "=== Step 4: Starting ${ATROPOS_ENV} environment ==="
 cd "${ATROPOS_DIR}"
 
-uv run --no-sync "environments/${ATROPOS_ENV}.py" serve \
+python3 "environments/${ATROPOS_ENV}.py" serve \
     --env.rollout_server_url "http://localhost:${ATROPOS_API_PORT}" \
     --env.group_size "${GROUP_SIZE}" \
     --env.max_token_length "${MAX_RESPONSE_LENGTH}" \
